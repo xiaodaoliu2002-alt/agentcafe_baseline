@@ -71,6 +71,26 @@ function normalizeCredential(value: string) {
   return value.replace(/^Bearer\s+/i, "").trim();
 }
 
+let openAiKeyCursor = 0;
+
+function splitCredentialList(value: string | undefined) {
+  return (value ?? "")
+    .split(/[\n,;]+/)
+    .map(normalizeCredential)
+    .filter(Boolean);
+}
+
+function getNextOpenAIKey() {
+  const keys = splitCredentialList(process.env.OPENAI_API_KEYS);
+  if (keys.length === 0) {
+    return process.env.OPENAI_API_KEY ? normalizeCredential(process.env.OPENAI_API_KEY) : "";
+  }
+
+  const key = keys[openAiKeyCursor % keys.length];
+  openAiKeyCursor = (openAiKeyCursor + 1) % keys.length;
+  return key;
+}
+
 function normalizeOpenAIBaseURL(value: string | undefined) {
   const clean = value?.replace(/\/+$/, "");
   if (!clean) {
@@ -88,7 +108,7 @@ function shouldUseOpenAICompatibleProxy(model: string) {
 }
 
 function getModel(): BaseChatModel {
-  const openAiKey = process.env.OPENAI_API_KEY;
+  const openAiKey = getNextOpenAIKey();
   const anthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
   const anthropicModel = getAnthropicModelName();
   const anthropicAuthToken = process.env.ANTHROPIC_AUTH_TOKEN
