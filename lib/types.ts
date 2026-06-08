@@ -7,7 +7,16 @@ export type AgentConfig = {
   role: string;
   source?: string;
   shortRole?: string;
+  apiKeyIndex?: number;
 };
+
+export type DiscussionSettings = {
+  participantCount: number;
+  roundCount: number;
+  speechesPerAgentPerRound: number;
+};
+
+export type SummaryMode = "round" | "final";
 
 export type DiscussionMessage = {
   id: string;
@@ -34,8 +43,16 @@ export type CustomAgentInput = {
 };
 
 export type SubmitAnswers = {
-  insight: string;
-  concept: string;
-  evidence: string;
-  nextStep: string;
+  userNeed: string;
+  designProblem: string;
+  designDirection: string;
+};
+
+export type UserBehaviorLog = {
+  id: string;
+  createdAt: string;
+  round: number;
+  turnIndex: number;
+  action: string;
+  details: Record<string, unknown>;
 };

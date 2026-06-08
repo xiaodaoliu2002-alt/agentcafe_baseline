@@ -233,6 +233,21 @@ p {
   gap: 8px;
 }
 
+.settings-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.settings-grid label {
+  display: grid;
+  gap: 6px;
+}
+
+.settings-grid span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .main-panel {
   display: grid;
   gap: 14px;
@@ -375,6 +390,36 @@ p {
   padding: 13px;
 }
 
+.message-card.is-summary {
+  border-left: 4px solid var(--teal-dark);
+  background: #f1faf6;
+}
+
+.message-card.is-summary .message-meta strong {
+  color: var(--teal-dark);
+}
+
+.round-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 13px;
+  border: 1px solid rgba(22, 121, 111, 0.3);
+  border-radius: 8px;
+  background: #edf7f3;
+}
+
+.round-notice div {
+  display: grid;
+  gap: 4px;
+}
+
+.round-notice span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .message-card:nth-child(4n + 1) {
   border-left: 4px solid var(--teal);
 }
@@ -437,6 +482,41 @@ p {
   background: #f3fbf7;
 }
 
+.final-insights {
+  background: #f4fbf8;
+}
+
+.insight-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.insight-card {
+  display: grid;
+  gap: 10px;
+  min-height: 86px;
+  padding: 12px;
+  border: 1px solid rgba(22, 121, 111, 0.22);
+  border-radius: 8px;
+  background: var(--surface-strong);
+}
+
+.insight-card span {
+  width: fit-content;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: #e1f1eb;
+  color: var(--teal-dark);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.insight-card p {
+  align-self: start;
+  margin-top: 4px;
+}
+
 .submission-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -452,11 +532,27 @@ p {
   margin-top: 12px;
 }
 
+.export-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.export-actions .export-button {
+  margin-top: 0;
+}
+
 .note-card {
   display: grid;
   gap: 7px;
   padding: 11px;
   border-left: 4px solid var(--amber);
+}
+
+.notebook-submit {
+  width: 100%;
+  margin-bottom: 12px;
 }
 
 .note-card p {
@@ -513,7 +609,8 @@ p {
 
   .workspace,
   .input-band,
-  .submission-grid {
+  .submission-grid,
+  .insight-grid {
     grid-template-columns: 1fr;
   }
 

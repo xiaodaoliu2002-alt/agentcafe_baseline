@@ -4,7 +4,13 @@ import { StateGraph, START, END, Annotation } from "@langchain/langgraph";
 import { ChatAnthropic } from "@langchain/anthropic";
 import { Anthropic } from "@anthropic-ai/sdk";
 import { ChatOpenAI } from "@langchain/openai";
-import type { AgentConfig, DiscussionMessage, Note } from "@/lib/types";
+import type {
+  AgentConfig,
+  DiscussionMessage,
+  DiscussionSettings,
+  Note,
+  SummaryMode
+} from "@/lib/types";
 import { clipText, countCjkLikeChars, enforceMaxChars, trimModelText } from "@/lib/text";
 
 const DiscussionState = Annotation.Root({
@@ -19,6 +25,14 @@ const DiscussionState = Annotation.Root({
   prompt: Annotation<string>({
     reducer: (_left, right) => right,
     default: () => ""
+  }),
+  settings: Annotation<DiscussionSettings>({
+    reducer: (_left, right) => right,
+    default: () => ({
+      participantCount: 6,
+      roundCount: 3,
+      speechesPerAgentPerRound: 1
+    })
   }),
   history: Annotation<DiscussionMessage[]>({
     reducer: (_left, right) => right,
@@ -51,6 +65,10 @@ const SummaryState = Annotation.Root({
     reducer: (_left, right) => right,
     default: () => []
   }),
+  mode: Annotation<SummaryMode>({
+    reducer: (_left, right) => right,
+    default: () => "round"
+  }),
   summary: Annotation<string>({
     reducer: (_left, right) => right,
     default: () => ""
@@ -80,8 +98,7 @@ function splitCredentialList(value: string | undefined) {
     .filter(Boolean);
 }
 
-function getNextOpenAIKey() {
-  const keys = splitCredentialList(process.env.OPENAI_API_KEYS);
+function getNextOpenAIKey(keys = splitCredentialList(process.env.OPENAI_API_KEYS)) {
   if (keys.length === 0) {
     return process.env.OPENAI_API_KEY ? normalizeCredential(process.env.OPENAI_API_KEY) : "";
   }
@@ -99,6 +116,24 @@ function normalizeOpenAIBaseURL(value: string | undefined) {
   return clean.endsWith("/v1") ? clean : `${clean}/v1`;
 }
 
+function parseOpenAIApiKeys() {
+  const raw = process.env.OPENAI_API_KEYS?.trim();
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.map((item) => String(item).trim()).filter(Boolean);
+    }
+  } catch {
+    // Plain delimiter-separated values are the expected local env format.
+  }
+
+  return splitCredentialList(raw);
+}
+
 function shouldUseOpenAICompatibleProxy(model: string) {
   const provider = (process.env.MODEL_PROVIDER || process.env.LLM_PROVIDER || process.env.ANTHROPIC_API_FORMAT || "")
     .toLowerCase()
@@ -107,8 +142,12 @@ function shouldUseOpenAICompatibleProxy(model: string) {
   return provider === "openai-compatible" || provider === "openai" || /^gpt[-_]/i.test(model);
 }
 
-function getModel(): BaseChatModel {
-  const openAiKey = getNextOpenAIKey();
+function getModel(options: { purpose?: "discussion" | "summary"; apiKeyIndex?: number } = {}): BaseChatModel {
+  const openAiKeys = parseOpenAIApiKeys();
+  const indexedOpenAiKey =
+    typeof options.apiKeyIndex === "number" && options.apiKeyIndex >= 0 ? openAiKeys[options.apiKeyIndex] : undefined;
+  const summaryOpenAiKey = options.purpose === "summary" ? openAiKeys[6] : undefined;
+  const selectedOpenAiKey = indexedOpenAiKey || summaryOpenAiKey || getNextOpenAIKey(openAiKeys);
   const anthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
   const anthropicModel = getAnthropicModelName();
   const anthropicAuthToken = process.env.ANTHROPIC_AUTH_TOKEN
@@ -116,6 +155,19 @@ function getModel(): BaseChatModel {
     : "";
   const anthropicApiKey = process.env.ANTHROPIC_API_KEY ? normalizeCredential(process.env.ANTHROPIC_API_KEY) : "";
   const anthropicCredential = anthropicApiKey || anthropicAuthToken;
+
+  if (selectedOpenAiKey) {
+    return new ChatOpenAI({
+      apiKey: selectedOpenAiKey,
+      model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
+      temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.7),
+      configuration: process.env.OPENAI_BASE_URL
+        ? {
+            baseURL: normalizeOpenAIBaseURL(process.env.OPENAI_BASE_URL)
+          }
+        : undefined
+    });
+  }
 
   if (anthropicCredential && anthropicBaseUrl && shouldUseOpenAICompatibleProxy(anthropicModel)) {
     return new ChatOpenAI({
@@ -153,14 +205,14 @@ function getModel(): BaseChatModel {
     });
   }
 
-  if (!openAiKey) {
+  if (!selectedOpenAiKey) {
     throw new Error(
-      "缺少模型 API 配置。请在 .env.local 中配置 ANTHROPIC_AUTH_TOKEN，或使用 OPENAI_API_KEY。"
+      "缺少模型 API 配置。请在 .env.local 中配置 OPENAI_API_KEYS，或使用 OPENAI_API_KEY。"
     );
   }
 
   return new ChatOpenAI({
-    apiKey: openAiKey,
+    apiKey: selectedOpenAiKey,
     model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
     temperature: Number(process.env.OPENAI_TEMPERATURE ?? 0.7),
     configuration: process.env.OPENAI_BASE_URL
@@ -177,7 +229,10 @@ function formatHistory(history: DiscussionMessage[]) {
   }
 
   return history
-    .map((item) => `第${item.turnIndex + 1}条 / 第${item.round}轮 / ${item.agentName}：${item.content}`)
+    .map((item, index) => {
+      const order = item.kind === "summary" ? `总结${index + 1}` : `第${item.turnIndex + 1}条`;
+      return `${order} / 第${item.round}轮 / ${item.agentName}：${item.content}`;
+    })
     .join("\n");
 }
 
@@ -211,17 +266,20 @@ async function invokeAgentSpeech(params: {
   prompt: string;
   history: DiscussionMessage[];
   turnIndex: number;
+  settings: DiscussionSettings;
   retry?: boolean;
 }) {
-  const round = Math.floor(params.turnIndex / params.agents.length) + 1;
-  const totalTurns = params.agents.length * 3;
+  const turnsPerRound = params.agents.length * params.settings.speechesPerAgentPerRound;
+  const round = Math.floor(params.turnIndex / turnsPerRound) + 1;
+  const speechPass = Math.floor((params.turnIndex % turnsPerRound) / params.agents.length) + 1;
+  const totalTurns = turnsPerRound * params.settings.roundCount;
   const system = [
     `你是一个多 Agent 设计 brief 研讨系统中的发言者：${params.speaker.name}。`,
     `你与其他 ${Math.max(params.agents.length - 1, 0)} 个 Agent 位于同一个共享讨论空间，你能看到此前完整讨论记录。`,
-    "你必须严格遵守：只输出一段中文发言；不要标题、编号、寒暄、自我介绍或 Markdown；长度控制在 200-250 个中文字符；不要重复已有观点；每次发言要推进设计洞察。",
-    "你的发言可以包含：设计机会、用户矛盾、隐含假设、风险、判断依据、值得验证的问题或概念方向。",
-    `当前是你第 ${round}/3 次发言，也是全局第 ${params.turnIndex + 1}/${totalTurns} 条 Agent 发言。`,
-    params.retry ? "上一版长度不符合要求，请重写为 200-250 个中文字符。" : "",
+    "你必须严格遵守：只输出一段中文发言；不要标题、编号、寒暄、自我介绍或 Markdown；长度不超过150个中文字符；不要重复已有观点；每次发言要推进设计洞察。",
+    "你的发言必须基于此前完整讨论记录，承接、回应或推进前文至少一个具体观点。",
+    `当前是第 ${round}/${params.settings.roundCount} 轮，本轮你第 ${speechPass}/${params.settings.speechesPerAgentPerRound} 次发言，也是全局第 ${params.turnIndex + 1}/${totalTurns} 条 Agent 发言。`,
+    params.retry ? "上一版长度不符合要求，请重写为150个中文字符以内。" : "",
     "",
     "你的角色/skill 设定如下：",
     clipText(params.speaker.role, 14000)
@@ -255,12 +313,17 @@ export async function runDiscussionStep(input: {
   prompt: string;
   history: DiscussionMessage[];
   turnIndex: number;
+  settings: DiscussionSettings;
 }) {
   const workflow = new StateGraph(DiscussionState)
     .addNode("agent_turn", async (state) => {
-      const model = getModel();
+      const turnsPerRound = state.agents.length * state.settings.speechesPerAgentPerRound;
       const speaker = state.agents[state.turnIndex % state.agents.length];
-      const round = Math.floor(state.turnIndex / state.agents.length) + 1;
+      const model = getModel({
+        purpose: "discussion",
+        apiKeyIndex: speaker.apiKeyIndex
+      });
+      const round = Math.floor(state.turnIndex / turnsPerRound) + 1;
       let content = await invokeAgentSpeech({
         model,
         agents: state.agents,
@@ -268,11 +331,12 @@ export async function runDiscussionStep(input: {
         brief: state.brief,
         prompt: state.prompt,
         history: state.history,
-        turnIndex: state.turnIndex
+        turnIndex: state.turnIndex,
+        settings: state.settings
       });
 
       const length = countCjkLikeChars(content);
-      if (length < 190 || length > 260) {
+      if (length > 150) {
         content = await invokeAgentSpeech({
           model,
           agents: state.agents,
@@ -281,6 +345,7 @@ export async function runDiscussionStep(input: {
           prompt: state.prompt,
           history: state.history,
           turnIndex: state.turnIndex,
+          settings: state.settings,
           retry: true
         });
       }
@@ -292,7 +357,7 @@ export async function runDiscussionStep(input: {
         kind: speaker.kind,
         round,
         turnIndex: state.turnIndex,
-        content: enforceMaxChars(content, 250),
+        content: enforceMaxChars(content, 150),
         createdAt: new Date().toISOString()
       };
 
@@ -317,17 +382,26 @@ export async function runSummary(input: {
   prompt: string;
   history: DiscussionMessage[];
   notes: Note[];
+  mode: SummaryMode;
+  round?: number;
 }) {
   const workflow = new StateGraph(SummaryState)
     .addNode("summary_agent", async (state) => {
-      const model = getModel();
-      const system = [
-        "你负责本次共享讨论的全局 harvest。",
-        "请提炼出创新观点、独特洞察、关键张力和下一步可能性。",
-        "不要抹平分歧，保留可继续研究的问题。",
-        "总结总字数不超过500个中文字符。",
-        "请基于完整讨论记录、初始 brief、初始 prompt 和用户笔记进行综合，不要编造讨论中没有出现的信息。"
-      ].join("\n");
+      const model = getModel({ purpose: "summary" });
+      const system =
+        state.mode === "final"
+          ? [
+              "你负责将目前讨论空间内的所有文本转化为可直接给用户看的结构化设计洞察。",
+              "请严格使用三个小标题：用户需求、设计问题、设计方向。",
+              "三个小标题下合计输出四条洞察：用户需求1条，设计问题1条，设计方向2条。",
+              "四条洞察总字符数必须500字以内，可直接给用户看。",
+              "不要写成长段落，不要复述每个人发言，不要展示额外推理过程。"
+            ].join("\n")
+          : [
+              "以上是目前讨论的内容和用户高亮的内容，请阅读并从中总结结束语。",
+              "结束语的任务不是完整总结，而是让参与者看见本轮的pattern：共识、转变、隐藏观点、张力。",
+              "用关键词式短句，300字以内，最多4行；不要写成长段落，不要复述每个人发言。"
+            ].join("\n");
 
       const notesText =
         state.notes.length === 0
@@ -335,6 +409,8 @@ export async function runSummary(input: {
           : state.notes.map((note, index) => `${index + 1}. ${note.agentName}：${note.text}`).join("\n");
 
       const human = [
+        `总结类型：${state.mode === "final" ? "全部轮次最终总结" : "本轮结束语"}`,
+        "",
         "初始设计 brief：",
         clipText(state.brief, 12000),
         "",
@@ -349,8 +425,9 @@ export async function runSummary(input: {
       ].join("\n");
 
       const response = await model.invoke([new SystemMessage(system), new HumanMessage(human)]);
+      const maxChars = state.mode === "final" ? 800 : 300;
       return {
-        summary: enforceMaxChars(messageContentToString(response), 500)
+        summary: enforceMaxChars(messageContentToString(response), maxChars)
       };
     })
     .addEdge(START, "summary_agent")

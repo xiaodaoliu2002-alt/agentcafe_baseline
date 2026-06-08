@@ -1,9 +1,24 @@
 import { NextResponse } from "next/server";
 import { runDiscussionStep } from "@/lib/agent-graph";
 import { getFixedSkillAgents } from "@/lib/skill-agents";
-import type { CustomAgentInput, DiscussionMessage } from "@/lib/types";
+import type { AgentConfig, CustomAgentInput, DiscussionMessage, DiscussionSettings } from "@/lib/types";
 
 export const runtime = "nodejs";
+
+const PARTICIPANT_COUNT = 6;
+
+const FALLBACK_ROLES = [
+  "从用户需求、使用情境和行为动机角度发言，帮助团队看见 brief 背后的真实人群与未被说出的需求。",
+  "从设计策略、体验原型和落地验证角度发言，帮助团队把讨论转化为可推进的设计机会。"
+];
+
+function normalizeSettings(settings?: Partial<DiscussionSettings>): DiscussionSettings {
+  return {
+    participantCount: PARTICIPANT_COUNT,
+    roundCount: Math.min(10, Math.max(1, Number(settings?.roundCount ?? 3))),
+    speechesPerAgentPerRound: Math.min(5, Math.max(1, Number(settings?.speechesPerAgentPerRound ?? 1)))
+  };
+}
 
 function normalizeCustomAgents(customAgents: CustomAgentInput[]) {
   return customAgents
@@ -22,6 +37,39 @@ function normalizeCustomAgents(customAgents: CustomAgentInput[]) {
     .filter((agent) => agent.role.length > 0);
 }
 
+function buildParticipatingAgents(fixedAgents: AgentConfig[], customAgents: ReturnType<typeof normalizeCustomAgents>) {
+  const agents: AgentConfig[] = fixedAgents.slice(0, 4).map((agent, index) => ({
+    ...agent,
+    apiKeyIndex: index
+  }));
+
+  for (const customAgent of customAgents) {
+    if (agents.length >= PARTICIPANT_COUNT) {
+      break;
+    }
+    agents.push({
+      ...customAgent,
+      apiKeyIndex: agents.length
+    });
+  }
+
+  while (agents.length < PARTICIPANT_COUNT) {
+    const fallbackIndex = agents.length - fixedAgents.length;
+    const displayIndex = agents.length + 1;
+    const role = FALLBACK_ROLES[fallbackIndex] ?? FALLBACK_ROLES[FALLBACK_ROLES.length - 1];
+    agents.push({
+      id: `fallback-agent-${displayIndex}`,
+      name: `补位 Agent ${displayIndex}`,
+      kind: "custom",
+      role,
+      shortRole: role.slice(0, 220),
+      apiKeyIndex: agents.length
+    });
+  }
+
+  return agents;
+}
+
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as {
@@ -30,6 +78,7 @@ export async function POST(request: Request) {
       prompt: string;
       history: DiscussionMessage[];
       turnIndex: number;
+      settings?: Partial<DiscussionSettings>;
     };
 
     if (!body.brief?.trim()) {
@@ -40,8 +89,9 @@ export async function POST(request: Request) {
     }
     const fixedAgents = await getFixedSkillAgents();
     const customAgents = normalizeCustomAgents(body.customAgents ?? []);
-    const agents = [...fixedAgents, ...customAgents];
-    const totalTurns = agents.length * 3;
+    const settings = normalizeSettings(body.settings);
+    const agents = buildParticipatingAgents(fixedAgents, customAgents);
+    const totalTurns = agents.length * settings.roundCount * settings.speechesPerAgentPerRound;
 
     if (fixedAgents.length < 4) {
       return NextResponse.json({ error: "固定 Skill Agent 未读取完整。" }, { status: 500 });
@@ -55,7 +105,8 @@ export async function POST(request: Request) {
       brief: body.brief,
       prompt: body.prompt,
       history: body.history ?? [],
-      turnIndex: body.turnIndex
+      turnIndex: body.turnIndex,
+      settings
     });
 
     return NextResponse.json({ message });
