@@ -14,6 +14,7 @@ import {
   Upload
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import type {
   CustomAgentInput,
   DiscussionMessage,
@@ -34,6 +35,8 @@ type FixedAgentPreview = {
 
 const CUSTOM_AGENT_COUNT = 8;
 const PARTICIPANT_COUNT = 6;
+const AGENT_ACCENT_COLORS = ["#62C4DA", "#FA855A", "#C93638", "#FFDE96", "#7BD8C8", "#E58AA0"];
+const SUMMARY_ACCENT_COLOR = "#C93638";
 
 const defaultCustomAgents: CustomAgentInput[] = Array.from({ length: CUSTOM_AGENT_COUNT }, (_, index) => ({
   name: `自定义 Agent ${index + 1}`,
@@ -144,6 +147,14 @@ function isDiscussionMessage(value: unknown): value is DiscussionMessage {
   );
 }
 
+function pickFallbackAccentColor(id: string) {
+  let hash = 0;
+  for (const char of id) {
+    hash = (hash * 31 + char.charCodeAt(0)) % AGENT_ACCENT_COLORS.length;
+  }
+  return AGENT_ACCENT_COLORS[hash];
+}
+
 export default function Home() {
   const [fixedAgents, setFixedAgents] = useState<FixedAgentPreview[]>([]);
   const [customAgents, setCustomAgents] = useState<CustomAgentInput[]>(defaultCustomAgents);
@@ -251,6 +262,15 @@ export default function Home() {
   const progress = totalTurns > 0 ? Math.round((currentTurn / totalTurns) * 100) : 0;
   const activeAgent = roster.length > 0 ? roster[currentTurn % roster.length] : undefined;
   const finalInsightGroups = useMemo(() => parseFinalInsightGroups(finalSummary), [finalSummary]);
+  const agentAccentMap = useMemo(
+    () => new Map(roster.map((agent, index) => [agent.id, AGENT_ACCENT_COLORS[index % AGENT_ACCENT_COLORS.length]])),
+    [roster]
+  );
+  const getMessageAccentColor = useCallback(
+    (agentId: string, kind: DiscussionMessage["kind"]) =>
+      kind === "summary" ? SUMMARY_ACCENT_COLOR : (agentAccentMap.get(agentId) ?? pickFallbackAccentColor(agentId)),
+    [agentAccentMap]
+  );
 
   const createUserLog = useCallback(
     (action: string, details: Record<string, unknown> = {}, roundOverride?: number): UserBehaviorLog => ({
@@ -719,7 +739,11 @@ export default function Home() {
             <h3>固定 Skill Agent</h3>
             <div className="fixed-agent-list">
               {fixedAgents.map((agent) => (
-                <div className="fixed-agent-row" key={agent.id}>
+                <div
+                  className="fixed-agent-row"
+                  key={agent.id}
+                  style={{ "--agent-accent": getMessageAccentColor(agent.id, "skill") } as CSSProperties}
+                >
                   <strong>{agent.name}</strong>
                   <span>{agent.source}</span>
                 </div>
@@ -900,6 +924,7 @@ export default function Home() {
                   className={`message-card ${message.kind === "summary" ? "is-summary" : ""}`}
                   key={message.id}
                   data-message-id={message.id}
+                  style={{ "--message-accent": getMessageAccentColor(message.agentId, message.kind) } as CSSProperties}
                 >
                   <div className="message-meta">
                     <strong>{message.agentName}</strong>
@@ -934,7 +959,16 @@ export default function Home() {
               )}
 
               {awaitingTurn && (
-                <article className="message-card is-loading">
+                <article
+                  className="message-card is-loading"
+                  style={
+                    {
+                      "--message-accent": activeAgent
+                        ? (agentAccentMap.get(activeAgent.id) ?? pickFallbackAccentColor(activeAgent.id))
+                        : AGENT_ACCENT_COLORS[0]
+                    } as CSSProperties
+                  }
+                >
                   <div className="message-meta">
                     <strong>{activeAgent?.name ?? "Agent"}</strong>
                     <span>生成中</span>
